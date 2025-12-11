@@ -1,8 +1,8 @@
 #include "main.h"
 
 #define DISTORTION_IDX 0
-#define DELAY_IDX 2
-#define FLANGER_IDX 3
+#define DELAY_IDX 3
+#define FLANGER_IDX 2
 
 PmodENC encoder;
 PmodOLED oled;
@@ -15,14 +15,15 @@ u8 inSlider = 0;
 int menuState = 0;
 u8 sliderVals[EFFECT_COUNT];
 u8 fxVal;
-char labels[EFFECT_COUNT][12] = {"Distortion", "Compressor", "Delay", "Flanger", "TBD4", "TBD5", "TBD6", "TBD7"};
-FXFunc effectFuncs[EFFECT_COUNT] = {Distortion, Compressor, Delay, Flanger, Distortion, Distortion, Distortion, Distortion,};
+char labels[EFFECT_COUNT][16] = {"Distortion", "Bitcrusher", "Flanger", "SuperFlanger", "SineMult", "TBD5", "TBD6", "TBD7"};
+FXFunc effectFuncs[EFFECT_COUNT] = {Distortion, Bitcrusher, Flanger, SuperFlanger, SineMult, Distortion, Distortion,Distortion};
 
 u32* delayFIFOLeft;
 u32* delayFIFORight;
 u32 delayFIFOSize;
 u32 delayFIFOReadIdx;
 u32 delayFIFOWriteIdx;
+u8 full;
 
 u32* flangerFIFOLeft;
 u32* flangerFIFORight;
@@ -34,12 +35,7 @@ double distortionGains[SLIDER_STATES];
 double invDistortionGains[SLIDER_STATES];
 double distortionWetMixes[SLIDER_STATES];
 
-double compressorVals[SLIDER_STATES];
-double left_current_gain_dB;
-double right_current_gain_dB;
-double s_denormalized_left;
-double s_denormalized_right;
-
+u32 bitcrushVals[SLIDER_STATES];
 
 char scrollText[] = "<<Scroll>>";
 char selectText[] = ">>Select<<";
@@ -62,8 +58,7 @@ int main(void)
 	{
 		UpdateStates();
 
-		UpdateOLED();circular_write(delayFIFOLeft, delayFIFORight, &delayFIFOWriteIdx, delayFIFOSize,in_left,in_right);
-		circular_read(delayFIFOLeft, delayFIFORight, &delayFIFOReadIdx, delayFIFOSize,&in_left,&in_right);
+		UpdateOLED();
 
 		pastEncState = ENC_getState(&encoder);
 
@@ -75,6 +70,14 @@ int main(void)
 			in_right = Xil_In32(I2S_DATA_RX_R_REG);
 			if (ENC_switchOn(pastEncState))
 				ApplyEffects();
+			/*
+				// Loud noise prevention
+				if (in_left & (1 << 30))
+					in_left = DC_OFFSET;
+				if (in_right & (1 << 30))
+					in_right = DC_OFFSET;
+			*/
+
 
 			// Write audio input to codec
 			Xil_Out32(I2S_DATA_TX_L_REG, in_left);
@@ -220,8 +223,8 @@ void Distortion()
 {
 	fxVal = sliderVals[i];
 
-	temp_left = INV_DC_OFFSET * ((double)in_left - DC_OFFSET);
-	temp_right = INV_DC_OFFSET * ((double)in_right - DC_OFFSET);
+	temp_left = pcm2double(in_left);
+	temp_right = pcm2double(in_right);
 
 	temp_left = tanh(distortionGains[i] * temp_left) * invDistortionGains[fxVal] * distortionWetMixes[fxVal];
 	temp_right = tanh(distortionGains[i] * temp_right) * invDistortionGains[fxVal] * distortionWetMixes[fxVal];
@@ -230,117 +233,75 @@ void Distortion()
 	in_right = (u32)(temp_right * DC_OFFSET + DC_OFFSET + in_right * (1-distortionWetMixes[fxVal]));
 
 }
-// TODO TEST
-void Compressor()
+
+void Bitcrusher()
 {
-    // Local Parameter Variables
-    const double compressorVal = compressorVals[sliderVals[i]];
-    const double threshold_dB = 0.0 - (30.0 * compressorVal);
+	const u32 bitcrush = bitcrushVals[sliderVals[i]];
+	in_left = (u32)(((u64)in_left / bitcrush) * bitcrush);
+	in_right = (u32)(((u64)in_right / bitcrush) * bitcrush);
 
 
-    const double ratio_inv = (1.0 - compressorVal) + compressorVal * 0.1;
-
-    const double makeup_gain = 12.0 * compressorVal;
-
-    // LEFT
-
-
-    fp_left = ((double)in_left - DC_OFFSET) * INV_DC_OFFSET;
-
-
-    // use as scratch
-    temp_right = DB_PER_NATURAL_LOG * log(fmax(fabs(fp_left), MIN_LEVEL));
-
-
-    if (temp_right > threshold_dB) {
-        temp_left = (threshold_dB - temp_right) * (1.0 - ratio_inv);
-    } else {
-        temp_left = 0.0;
-    }
-
-
-    left_current_gain_dB =
-        ((temp_left < left_current_gain_dB) ? COMPRESSOR_ATTACK : COMPRESSOR_RELEASE)
-        * left_current_gain_dB
-        + (1.0 - ((temp_left < left_current_gain_dB) ? COMPRESSOR_ATTACK : COMPRESSOR_RELEASE))
-        * temp_left; // temp_left still holds g_c_dB
-
-
-    temp_left = fp_left * exp((left_current_gain_dB + makeup_gain) * INV_DB_PER_NATURAL_LOG) * DC_OFFSET;
-
-
-    temp_left = fmin(temp_left, DC_OFFSET - 1.0);
-    temp_left = fmax(temp_left, -DC_OFFSET);
-
-    in_left = (uint32_t)(temp_left + DC_OFFSET);
-
-
-    // RIGHT
-
-    fp_right = ((double)in_right - DC_OFFSET) * INV_DC_OFFSET;
-
-
-    temp_right = DB_PER_NATURAL_LOG * log(fmax(fabs(fp_right), MIN_LEVEL));
-
-
-    if (temp_right > threshold_dB) {
-        temp_right = (threshold_dB - temp_right) * (1.0 - ratio_inv);
-    } else {
-        temp_right = 0.0;
-    }
-
-
-    right_current_gain_dB =
-        ((temp_right < right_current_gain_dB) ? COMPRESSOR_ATTACK : COMPRESSOR_RELEASE)
-        * right_current_gain_dB
-        + (1.0 - ((temp_right < right_current_gain_dB) ? COMPRESSOR_ATTACK : COMPRESSOR_RELEASE))
-        * temp_right; // temp_right still holds g_c_dB
-
-
-    temp_right = fp_right * exp((right_current_gain_dB + makeup_gain) * INV_DB_PER_NATURAL_LOG) * DC_OFFSET;
-
-
-    temp_right = fmin(temp_right, DC_OFFSET - 1.0);
-    temp_right = fmax(temp_right, -DC_OFFSET);
-
-    in_right = (uint32_t)(temp_right + DC_OFFSET);
 }
+
+
 
 void circular_read(u32* lbuffer, u32*rbuffer, u32* readIdxPtr, u32 bufferSize, u32* lValPtr, u32* rValPtr)
 {
-	*lValPtr = lbuffer[*readIdxPtr];
-	*rValPtr = rbuffer[*readIdxPtr];
-	(*readIdxPtr)++;
-	if (*readIdxPtr >= bufferSize)
-		*readIdxPtr-= bufferSize;
+    *lValPtr = lbuffer[*readIdxPtr];
+    *rValPtr = rbuffer[*readIdxPtr];
+    (*readIdxPtr)++;
+    if (*readIdxPtr >= bufferSize)
+        *readIdxPtr = 0;  // Changed from -= bufferSize
 }
-
 
 void circular_write(u32* lbuffer, u32* rbuffer, u32* writeIdxPtr, u32 bufferSize, u32 lVal, u32 rVal)
 {
-	lbuffer[*writeIdxPtr] = lVal;
-	rbuffer[*writeIdxPtr] = rVal;
-	(*writeIdxPtr)++;
-	if (*writeIdxPtr >= bufferSize)
-		*writeIdxPtr -= bufferSize;
+    lbuffer[*writeIdxPtr] = lVal;
+    rbuffer[*writeIdxPtr] = rVal;
+    (*writeIdxPtr)++;
+    if (*writeIdxPtr >= bufferSize)
+        *writeIdxPtr = 0;  // Changed from -= bufferSize
 }
 
-void Delay()
+void SuperFlanger()
 {
-	circular_write(delayFIFOLeft, delayFIFORight, &delayFIFOWriteIdx, delayFIFOSize,in_left,in_right);
-	circular_read(delayFIFOLeft, delayFIFORight, &delayFIFOReadIdx, delayFIFOSize,&in_left,&in_right);
+	if (!full)
+	{
+		circular_write(delayFIFOLeft, delayFIFORight, &delayFIFOWriteIdx, delayFIFOSize,in_left,in_right);
+		if (delayFIFOWriteIdx == 0)
+			full = 1;
+	}
+	else
+	{
+		circular_read(delayFIFOLeft, delayFIFORight, &delayFIFOReadIdx, delayFIFOSize,&in_left,&in_right);
+		if (delayFIFOReadIdx == 0)
+			full = 0;
+	}
 }
 
 void Flanger()
 {
-	const u32 initial_left = in_left;
-	const u32 initial_right = in_right;
+	const double initial_left = in_left;
+	const double initial_right = in_right;
 
-	circular_write(delayFIFOLeft, delayFIFORight, &delayFIFOWriteIdx, delayFIFOSize,in_left,in_right);
-	circular_read(delayFIFOLeft, delayFIFORight, &delayFIFOReadIdx, delayFIFOSize,&in_left,&in_right);
+	circular_write(flangerFIFOLeft, flangerFIFORight, &flangerFIFOWriteIdx, flangerFIFOSize,in_left,in_right);
+	circular_read(flangerFIFOLeft, flangerFIFORight, &flangerFIFOReadIdx, flangerFIFOSize,&in_left,&in_right);
 
 	in_left += initial_left;
 	in_right += initial_right;
+
+}
+
+void SineMult()
+{
+	XNco_Set_step_size_V(&Nco, sliderVals[i]);
+
+	/* Receive sinusoidal sample from NCO core */
+	const u32 nco_out = XNco_Get_sine_sample_V(&Nco);
+
+	in_left = double2pcm(pcm2double(in_left)*pcm2double(nco_out));
+	in_right = double2pcm(pcm2double(in_right)*pcm2double(nco_out));
+
 }
 
 void Setup()
@@ -355,7 +316,7 @@ void Setup()
 		invDistortionGains[i] = 1/distortionGains[i];
 		distortionWetMixes[i] = ratio*DISTORTION_MAX_WET_MIX;
 
-		compressorVals[i] = ratio*COMPRESSOR_MAX_VAL;
+		bitcrushVals[i] = (u32)(ratio*MAX_BITCRUSH);
 	}
 
 	xil_printf("Lookup Tables Generated\n\r");
@@ -420,6 +381,7 @@ void OLEDGreet()
 	 }
 	pat = OLED_GetStdPattern(1);
 	OLED_SetFillPattern(&oled, pat);
+	sleep(1);
 
 }
 
@@ -480,4 +442,14 @@ void nco_init(void *InstancePtr){
 	if (status != XST_SUCCESS) {
 		print("ERROR: Could not initialise NCO.\n\r");
 	}
+}
+
+inline double pcm2double(u32 val)
+{
+	return ((double)val - DC_OFFSET) * INV_DC_OFFSET;
+}
+
+inline u32 double2pcm(double val)
+{
+	return (u32)(val*DC_OFFSET + DC_OFFSET);
 }

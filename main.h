@@ -39,13 +39,16 @@ unsigned char gpio_init();
 void nco_init();
 void circular_read(u32* lbuffer, u32*rbuffer, u32* readIdxPtr, u32 bufferSize, u32* lValPtr, u32* rValPtr);
 void circular_write(u32* lbuffer, u32* rbuffer, u32* writeIdxPtr, u32 bufferSize, u32 lVal, u32 rVal);
+inline double pcm2double(u32 val);
+inline u32 double2pcm(double val);
 
 // FX Functions
 
 void Distortion();
-void Compressor();
-void Delay();
+void SuperFlanger();
 void Flanger();
+void Bitcrusher();
+void SineMult();
 
 /* ---------------------------------------------------------------------------- *
  * 						Redefinitions from xparameters.h 						*
@@ -77,25 +80,22 @@ void Flanger();
 #define DC_OFFSET 2147483648.0
 #define INV_DC_OFFSET 4.6566128730773926e-10 // 1.0 / 2147483648.0
 
+
 #define EFFECT_COUNT 8
 #define SLIDER_STATES 20
 #define SLIDER_MAX 19// SLIDER_STATES -1
 
-#define DISTORTION_MAX_GAIN 3.95
-#define DISTORTION_MAX_WET_MIX .010
+#define DISTORTION_MAX_GAIN 3.5
+#define DISTORTION_MAX_WET_MIX .012
 
-#define COMPRESSOR_MAX_VAL .75
-#define COMPRESSOR_TARGET_DB -6.02059991328
-#define COMPRESSOR_ATTACK .9997
-#define COMPRESSOR_RELEASE .9999
-// Conversion factor for 20 * log10(x) to 8.68589 * log(x)
-#define DB_PER_NATURAL_LOG 8.685889638069818
-// Conversion factor for exp(x / 20 * ln(10)) to exp(x * 0.11512925)
-#define INV_DB_PER_NATURAL_LOG 0.11512925464970228
-#define MIN_LEVEL 1e-10
+#define MAX_BITCRUSH (1<<16)
+#define INV_32_BIT .3283064e-10
+#define EPS 1e-16
 
-#define DELAY_MAX_FIFO_SAMPLES 48000
+#define DELAY_MAX_FIFO_SAMPLES 2400
 #define FLANGER_MAX_FIFO_SAMPLES 4800
+
+
 
 typedef void (*FXFunc)();
 
